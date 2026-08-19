@@ -210,17 +210,6 @@ for (i in dfnames) {
 
   # RESET point ------------------------------------------------------------
   # max_cov and removedCtrlProbes are per-file state and are reset here.
-  #
-  # BEHAVIOURAL FIX vs. the original script: the original initialized
-  # `maxCoV = 1` ONCE, above the file loop. Because the while loop below exits
-  # only when maxCoV <= limitCoV, maxCoV was already below the limit by the
-  # time the second file was reached, so the control-probe optimization ran
-  # for the FIRST file only and every subsequent file silently kept all of its
-  # housekeeping probes. That also made results depend on alphabetical
-  # filename order. Measured on the three C. albicans runs, the fix changes
-  # per-lane normalization factors by up to ~14%, but log2 fold changes by a
-  # median of only ~0.03 (max ~0.14), because the shift largely cancels
-  # between the paired untreated and treated lanes of a strain.
   max_cov <- 1
   removedCtrlProbes <- c()
 

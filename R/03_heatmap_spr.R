@@ -18,7 +18,7 @@
 #   susceptible strains that went through RNAseq. Each strain's response is
 #   projected onto that axis and normalized. A susceptible strain mounts the
 #   canonical response and scores near 1; a resistant strain barely responds to
-#   the drug and scores near 0. See SECTION 5 for the arithmetic.
+#   the drug and scores near 0. 
 #
 # INPUT   data/logfc/logfc_albicansFluc_compiled.csv   from 02_compute_logfc.R
 #         metadata/albicansFluc_IDs.csv

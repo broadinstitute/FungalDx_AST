@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 
-source("/gsap/fungaldx/Cglabrata/Brooks_work/R_scripts/utils.R")
+source("geneSelect/utils_Updated.R")
 library(DESeq2)
 library(metap)
 library(docopt)

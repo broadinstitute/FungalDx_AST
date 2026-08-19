@@ -21,12 +21,9 @@ can clone it and reproduce the figure without supplying anything of your own.
 - [Repository layout](#repository-layout)
 - [How the scripts interact](#how-the-scripts-interact)
 - [Script reference](#script-reference)
-- [File format reference](#file-format-reference)
 - [Probe naming convention](#probe-naming-convention)
 - [The normalization method in detail](#the-normalization-method-in-detail)
-- [SPR — Signature Projection Ratio](#spr--signature-projection-ratio)
 - [Adapting to a different species or drug](#adapting-to-a-different-species-or-drug)
-- [Changes from the original lab scripts](#changes-from-the-original-lab-scripts)
 - [Requirements](#requirements)
 
 ---
@@ -224,70 +221,9 @@ plain dots, no error bars.
 | Setting | Default | Meaning |
 |---|---|---|
 | `STRIP_PROBE_PREFIX` | `TRUE` | Turn `CaFluc3_R_ERG11` into `ERG11` on the row labels. |
-| `GENES_TO_KEEP` | `NULL` | `NULL` uses every gene with rows clustered. A vector uses exactly those genes in that order, clustering off. |
 | `COL_ORDER` | `"MIC_asc"` | Most susceptible on the left. Ties broken by descending SPR. |
 | `SUS_COLORS` | black / grey | Susceptibility strip colours. Keys must match your metadata values. |
 | `FIG_WIDTH` / `FIG_HEIGHT` | `10` / `8` in | Widen for many strains. |
-
-> ⚠️ **`GENES_TO_KEEP` is applied *before* SPR is computed**, so SPR is scored
-> over the selected genes only. This is deliberate and matches the published
-> figure: a curated signature should be scored on its own genes. If you want
-> SPR across the full panel, leave it `NULL`.
-
----
-
-## File format reference
-
-### Raw nSolver export (`data/raw/*.csv`)
-
-The standard nCounter "RCC collector" layout:
-
-- **Rows 1–15** — cartridge metadata: `File Name`, `Description`, `Sample ID`,
-  `Owner`, `Lane ID`, `FOV Count`, `Binding Density`, `Messages`, and others.
-  The script reads **`Sample ID`** to name the columns and ignores the rest.
-- **Row 16 onward** — one row per probe.
-  - Column 1: probe class (`Positive`, `Negative`, `Endogenous`)
-  - Column 2: **probe name** — this becomes the row identifier and drives every
-    downstream classification. See [Probe naming](#probe-naming-convention).
-  - Column 3: accession
-  - Columns 4+: counts, one per lane
-
-### Metadata sheet (`metadata/albicansFluc_IDs.csv`)
-
-One row per strain. All five columns are required.
-
-| Column | Example | Meaning |
-|---|---|---|
-| `SampleID` | `Fx041` | Internal code. Must match the lane column prefix in the data (before `X4`/`F4`). |
-| `MIC` | `0.25` | Broth microdilution MIC, µg/mL. Numeric — drives column ordering. |
-| `Susceptibility` | `S` | Clinical breakpoint call: `S`, `I`, `R`, or `SDD`. |
-| `RNAseq` | `Y S` | Derivation-strain flag. See below. |
-| `Identifier` | `P75016` | Publication-facing strain name. Becomes the figure's column label. |
-
-**The `RNAseq` column** tells `03` which strains defined the signature:
-
-- `Y S` (or `Y S1`, `Y S2`, …) — went through RNAseq, **susceptible**
-  derivation strain. These define the axial vector.
-- `Y R` (or `Y R1`, …) — went through RNAseq, **resistant** derivation strain.
-- `N` — validation strain. Did not contribute to the signature.
-
-This split matters: SPR is only an honest test on strains that did not help
-build the axis.
-
-### Normalized output (`data/normalized/*_normalized.csv`)
-
-Probes × lanes, normalized counts. Two quirks inherited from the original
-method, both handled automatically by `02`:
-
-- Rows are **sorted alphabetically** by probe name (a side effect of the
-  `merge()` used to reindex).
-- Probes dropped during control QC reappear as **all-`NA` rows named `NA`,
-  `NA.1`, …**. `02` filters these out.
-
-### logFC output (`data/logfc/*.csv`)
-
-Genes × strains. Row names are probe names; column names are publication
-`Identifier`s. This is the direct input to `03`.
 
 ---
 
@@ -356,47 +292,7 @@ lane effect is multiplicative.
    housekeeping set for its lane. Housekeeping probes are normalized the same
    way, so a well-behaved one sits near 1 and can be sanity-checked.
 
----
 
-## SPR — Signature Projection Ratio
-
-SPR collapses a strain's entire transcriptional response into a single number:
-**how strongly does this strain respond along the canonical susceptible
-direction?**
-
-Let **a** be the *axial vector* — the mean log2FC profile across the
-susceptible RNAseq derivation strains. That is what "responding to
-fluconazole" looks like for a susceptible isolate.
-
-For a strain with log2FC profile **x**:
-
-```
-s   = Σ_genes ( x_g · a_g )          projection of x onto a (a dot product)
-
-SPR = s · |s| / ( Σ_genes a_g² )²
-```
-
-Reading the formula:
-
-- The **dot product** asks how much of **x** points along **a**. A strain that
-  mounts the same response, only weaker, still projects positively.
-- **`s · |s|`** squares the magnitude while preserving the sign. This sharpens
-  the separation between responders and non-responders, and lets a strain
-  responding in the *opposite* direction score negative.
-- The **denominator** normalizes by the axial vector's own squared length, so
-  the scale is set by the susceptible reference rather than by units of log2FC.
-  A derivation-susceptible strain lands near 1.
-
-In practice: **susceptible strains score high, resistant strains score near
-zero**, and the SPR panel under the heatmap should track the MIC row beneath
-it. Where it doesn't, that strain is worth a second look.
-
-`calculate_SPR()` returns the three groups separately (`spr_S`, `spr_R`,
-`spr_valid`) as well as concatenated (`spr_all`), so you can check that the
-validation strains — which contributed nothing to the axis — separate as
-cleanly as the derivation strains did.
-
----
 
 ## Adapting to a different species or drug
 
@@ -412,100 +308,6 @@ cleanly as the derivation strains did.
 5. **Update `FIG_TITLE`, `OUT_BASENAME`,** and the file paths in `03`.
 6. **Confirm the probe naming** follows the convention above — this is the most
    common source of silent misclassification.
-
----
-
-## Changes from the original lab scripts
-
-These scripts are modernized rewrites of `NanoString_data_normalize_and_combine.R`
-and `HeatMapFuncs.R`. **The analysis is unchanged apart from the one
-behavioural fix below**, which is called out explicitly because it affects
-numbers.
-
-### Behavioural fix: per-file control probe optimization
-
-The original initialized `maxCoV = 1` **once, above the file loop**. The
-optimization loop exits when `maxCoV <= limitCoV`, so by the time the second
-input file was reached `maxCoV` was already below the limit and the loop was
-skipped entirely. **Housekeeping probe optimization therefore ran on the first
-file only**; every subsequent file silently kept all of its normalizers. Since
-`list.files()` returns files alphabetically, this also made results depend on
-filename ordering.
-
-`maxCoV` is now reset at the top of each file iteration.
-
-Measured on the three demo runs, in the alphabetical order `list.files()`
-returns them:
-
-| Run | Original behaviour | Fixed behaviour | Probes the fix additionally removes |
-|---|---|---|---|
-| CalbFluc001 | loop **ran** — 10 → 9 normalizers | 10 → 9 | *(unchanged — this was the first file)* |
-| CalbFluc002 | loop **skipped** — 10 kept | 10 → 8 | `CTA3`, `COF1` |
-| CalbFluc003 | loop **skipped** — 10 kept | 10 → 8 | `POR1`, `SEC26` |
-
-Impact on the two affected runs: per-lane normalization factors shift by a
-median of **2–14%** (max ~22%), but **log2 fold changes by a median of only
-~0.04 (max ~0.14)**, because the shift largely cancels between a strain's
-paired untreated and treated lanes. Conclusions drawn from fold change are
-unaffected; analyses using *absolute* normalized counts would move.
-
-> Note how sharply this depended on filename ordering. These same three files
-> were originally supplied with run 001 named `Copy of ...CalbFluc001.csv`,
-> which sorts *last*; under the original script that made run **002** the one
-> that got optimized and left 001 and 003 untrimmed. A rename silently changed
-> which runs were normalized correctly. That alone is reason enough to treat
-> the leak as a defect rather than a design choice.
-
-### Additive changes (no existing number moves)
-
-- **`data/control_probe_QC.csv` is now written.** The original built this table
-  in memory and then never saved it, so the record of which normalizers were
-  dropped was lost at the end of each session.
-- **Its first column is now correctly labelled `probe`.** The original named it
-  `controls`, and because `rbind.data.frame()` silently discards zero-row data
-  frames *before* checking column names, the intended header was thrown away on
-  the first bind instead of raising an error.
-- **Output directories are created if missing** (`dir.create(recursive = TRUE)`),
-  so a fresh clone runs without manual setup.
-
-### Non-behavioural changes
-
-- **Row-name-safe subsetting.** `dplyr::filter(grepl(..., rownames(x)))` was
-  replaced with base-R subsetting. Probe identity lives entirely in row names,
-  and dplyr's row-name handling for base data frames has varied across
-  versions. Same rows, same order, no version risk.
-- **No global-variable leakage.** `removeCtrlMaxCoV()` took `limitCoV` from the
-  global environment; it is now a **required** argument. This is the only
-  changed signature in the codebase. An older script calling
-  `removeCtrlMaxCoV(x)` will stop with an explanatory error rather than
-  silently using a value it did not choose.
-- **`drop = FALSE`** added where subsetting could collapse a one-row data frame
-  into a vector.
-- **Relative paths.** Hard-coded absolute Google Drive paths were replaced with
-  repo-relative defaults.
-- **Config blocks.** Every tunable moved to a single `SECTION 1: USER CONFIG`
-  block per script.
-- **Commented-out alternatives preserved.** The disabled negative-probe outlier
-  removal, post-normalization outlier handling, and baseline-probe variant are
-  kept verbatim in the appendix of `01` rather than deleted.
-- **Explicit sample aliasing** replaced an implicit prefix-rewriting heuristic.
-- **Warnings added** for duplicate sample IDs, unpaired lanes, samples missing
-  from the metadata, and gene names not found — cases that previously failed
-  silently.
-- **In `03`:** a duplicated `ha_bottom` definition (the first was immediately
-  overwritten) was removed, probe-prefix stripping was added, and the figure is
-  now written as both SVG and PDF alongside a CSV of the SPR values.
-
-With the single exception of `removeCtrlMaxCoV()` noted above, function names
-and argument signatures are unchanged, so existing lab scripts that source
-`nanostring_helpers.R` will continue to work.
-
-### Not yet verified in R
-
-These scripts were written and audited statically; the numerical claims above
-were reproduced with an independent implementation of the control-probe logic,
-not by executing the R itself. **Run `01`–`03` once against the demo data and
-confirm the figure before treating this repository as the reference version.**
 
 ---
 

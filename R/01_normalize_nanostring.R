@@ -24,9 +24,6 @@
 #
 # NEXT STEP  R/02_compute_logfc.R
 #
-# Modernized from the lab's original `NanoString_data_normalize_and_combine.R`.
-# See README.md ("Changes from the original scripts") for the full list of
-# differences. The one behavioural change is documented at RESET point below.
 # =============================================================================
 
 

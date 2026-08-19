@@ -86,7 +86,7 @@ The demo data and metadata are tracked in git; everything the scripts generate i
 
 ## GeneSelect note
 
-The `geneSelect/` directory contains the gene-selection scripts used during the earlier panel-design step. They are intended to be run from inside this repository using repo-relative paths, so they do not depend on machine-specific absolute paths. If you want the full rationale for how genes were prioritized, please cite the methods section of the earlier published paper alongside this repo.
+The `geneSelect/` directory contains the gene-selection scripts used during the earlier panel-design step. 
 
 ---
 

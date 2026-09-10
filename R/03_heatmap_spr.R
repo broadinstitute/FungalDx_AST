@@ -18,11 +18,13 @@
 #   susceptible strains that went through RNAseq. Each strain's response is
 #   projected onto that axis and normalized. A susceptible strain mounts the
 #   canonical response and scores near 1; a resistant strain barely responds to
-#   the drug and scores near 0. 
+#   the drug and scores near 0.
 #
-# INPUT   data/logfc/logfc_albicansFluc_compiled.csv   from 02_compute_logfc.R
-#         metadata/albicansFluc_IDs.csv
-# OUTPUT  figures/albicansFluc_heatmap_SPR.svg  (and .pdf)
+# INPUT   data/logfc/logfc_<species>_compiled.csv   from 02_compute_logfc.R
+#         metadata/<species>_IDs.csv
+# OUTPUT  figures/<species>_heatmap_SPR.svg  (and .pdf)
+#
+# Which <species> pair is set by SPECIES_DRUG below; see R/00_species_config.R.
 #
 # This is the single-run version: one measurement per strain, plain dots, no
 # error bars. Averaging replicate runs is a separate analysis.
@@ -45,16 +47,25 @@ library(dplyr)
 library(grid)
 library(svglite)
 
+source("R/00_species_config.R")
+
 
 # =============================================================================
 # SECTION 1: USER CONFIG
 # =============================================================================
 
+# ---- Which species/drug pair -----------------------------------------------
+# This is the only line that should normally change. Use the SAME value used
+# in 01_normalize_nanostring.R / 02_compute_logfc.R. See
+# R/00_species_config.R for the registry.
+SPECIES_DRUG <- "albicansFluc"
+cfg <- get_species_config(SPECIES_DRUG)
+
 # ---- Paths ---------------------------------------------------------------
-LOGFC_FILE    <- "data/logfc/logfc_albicansFluc_compiled.csv"
-METADATA_FILE <- "metadata/albicansFluc_IDs.csv"
+LOGFC_FILE    <- cfg$logfc_file
+METADATA_FILE <- cfg$metadata_file
 OUT_DIR       <- "figures"
-OUT_BASENAME  <- "albicansFluc_heatmap_SPR"
+OUT_BASENAME  <- cfg$out_basename
 
 # ---- Gene name cleanup ---------------------------------------------------
 # Probe names carry a panel prefix and a class tag, e.g.
@@ -103,7 +114,7 @@ SUSCEPTIBLE_LEVELS <- c("S", "SDD")
 # ---- Figure ---------------------------------------------------------------
 FIG_WIDTH  <- 10          # inches; increase for many strains
 FIG_HEIGHT <- 8
-FIG_TITLE  <- "C. albicans Fluconazole log2 Fold Change - Heatmap + SPR"
+FIG_TITLE  <- cfg$fig_title
 
 POINT_SIZE_MM <- 4
 SPR_PANEL_CM  <- 3.8
@@ -116,8 +127,21 @@ SPR_PANEL_CM  <- 3.8
 logfc_mat <- as.matrix(read.csv(LOGFC_FILE, row.names = 1, check.names = FALSE))
 metadata  <- read.csv(METADATA_FILE, stringsAsFactors = FALSE)
 
-stopifnot(all(c("Identifier", "MIC", "Susceptibility", "RNAseq") %in%
+# The logFC columns are named with cfg$label_key (02 did the renaming), which
+# is usually the sheet's "Identifier" column but not always. Normalize here so
+# everything below can just say Identifier.
+LABEL_KEY <- cfg$label_key
+
+stopifnot(all(c(LABEL_KEY, "MIC", "Susceptibility", "RNAseq") %in%
                 colnames(metadata)))
+
+if (LABEL_KEY != "Identifier") {
+  # The sheet's own "Identifier" column is the lane code in this arrangement,
+  # not the label - drop it so it cannot shadow the real one.
+  metadata[["Identifier"]] <- NULL
+  metadata[["Identifier"]] <- metadata[[LABEL_KEY]]
+  cat("Labelling columns with the '", LABEL_KEY, "' column.\n", sep = "")
+}
 
 cat("logFC matrix: ", nrow(logfc_mat), " genes x ", ncol(logfc_mat),
     " strains\n", sep = "")
@@ -128,8 +152,14 @@ cat("Metadata rows: ", nrow(metadata), "\n", sep = "")
 # Matches "<panel>_<class>_" at the start of the name, where class is one of
 # the probe-type tags used across the lab's panels. Anything that does not
 # match is left untouched, so running this twice is harmless.
+#
+# The prefix is matched lazily because panel names are not all one token:
+# CaFluc3_R_ERG11 and Cf_Rup_103490.1 have single-token panels, but
+# Caur_Vori_R_CJI97_000027T0 and Cglab_Mica_C_GVI51_E02629 do not. A greedy
+# or single-token pattern leaves those two panels unstripped.
 if (STRIP_PROBE_PREFIX) {
-  clean <- sub("^[^_]+_(Rup|Rdn|Rb|Ri|R|B|C)_", "", rownames(logfc_mat))
+  clean <- sub("^.*?_(Rup|Rdn|Rb|Ri|R|B|C)_", "", rownames(logfc_mat),
+               perl = TRUE)
 
   dups <- clean[duplicated(clean)]
   if (length(dups) > 0) {
@@ -395,7 +425,7 @@ dir.create(OUT_DIR, showWarnings = FALSE, recursive = TRUE)
 
 out_svg <- file.path(OUT_DIR, paste0(OUT_BASENAME, ".svg"))
 out_pdf <- file.path(OUT_DIR, paste0(OUT_BASENAME, ".pdf"))
-out_spr <- file.path(OUT_DIR, paste0(OUT_BASENAME, "_SPR_values.csv"))
+out_spr <- file.path(OUT_DIR, paste0(OUT_BASENAME, "_table.csv"))
 
 svglite(out_svg, width = FIG_WIDTH, height = FIG_HEIGHT)
 render_figure()

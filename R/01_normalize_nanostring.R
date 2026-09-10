@@ -44,19 +44,27 @@ if (!file.exists(HELPERS_FILE)) {
        '  setwd("~/path/to/fungal-ast-pipeline")')
 }
 source(HELPERS_FILE)
+source("R/00_species_config.R")
 
 
 # =============================================================================
 # SECTION 1: USER CONFIG - edit these for each dataset
 # =============================================================================
 
+# ---- Which species/drug pair -----------------------------------------------
+# This is the only line that should normally change. See
+# R/00_species_config.R for the full list of registered pairs and what to add
+# when registering a new one.
+SPECIES_DRUG <- "albicansFluc"
+cfg <- get_species_config(SPECIES_DRUG)
+
 # ---- Paths --------------------------------------------------------------
 # Directory containing the analysis. Paths below are relative to the repo
 # root; replace with absolute paths to run against data held elsewhere
 # (e.g. a shared Google Drive folder).
-DIR         <- "data/"           # analysis root
-SUBDIR      <- "raw/"            # input:  raw nSolver CSVs live in DIR/SUBDIR
-NEW_SUBDIR  <- "normalized/"     # output: per-run normalized CSVs
+DIR         <- "data/"                  # analysis root
+SUBDIR      <- paste0(cfg$raw_subdir, "/")         # input:  raw nSolver CSVs live in DIR/SUBDIR
+NEW_SUBDIR  <- paste0(cfg$normalized_subdir, "/")  # output: per-run normalized CSVs
 
 # ---- Input format --------------------------------------------------------
 # "nsolver" : standard nCounter export. 14 metadata rows, then probe rows;
@@ -70,8 +78,10 @@ INPUT_FORMAT <- "nsolver"
 
 # Minimum for housekeeping / control probes ("_C_"). A control probe reading
 # below this in ANY sample is dropped from ALL samples. Should sit comfortably
-# above the negative control probes.
-minCtrl <- 10
+# above the negative control probes. Per-pair, because control-probe levels
+# differ by more than an order of magnitude between panels - set it in
+# R/00_species_config.R (`min_ctrl`), not here.
+minCtrl <- cfg$min_ctrl
 
 # Minimum for response probes. Set to 0 to disable (the default): response
 # probes are informative even when low, and the 6x-SD floor already protects
@@ -105,8 +115,17 @@ in_path  <- file.path(DIR, SUBDIR)
 out_path <- file.path(DIR, NEW_SUBDIR)
 dir.create(out_path, showWarnings = FALSE, recursive = TRUE)
 
-# Input files, in the order list.files() returns them (alphabetical).
-dfnames <- list.files(path = in_path, pattern = "*.csv")
+# Input files, in the order list.files() returns them (alphabetical). Files
+# are named <pair>_runNN.csv, so alphabetical order is run order.
+dfnames <- list.files(path = in_path, pattern = "\\.csv$")
+
+if (length(cfg$exclude_files) > 0) {
+  skipped <- intersect(dfnames, cfg$exclude_files)
+  if (length(skipped) > 0) {
+    cat("Excluded by config: ", paste(skipped, collapse = ", "), "\n", sep = "")
+    dfnames <- setdiff(dfnames, skipped)
+  }
+}
 
 if (length(dfnames) == 0) {
   stop("No CSV files found in ", in_path)
@@ -136,29 +155,65 @@ for (l in dfnames) {
 
   if (INPUT_FORMAT == "nsolver") {
 
-    df_in <- read.csv(file.path(in_path, l))
+    # Read with no header and locate the rows we need by their label in
+    # column 1, rather than assuming fixed row numbers. Exports are not
+    # consistent: most carry 15 metadata rows (File Name ... Messages), but
+    # some are missing the File Name / Description rows entirely, which
+    # silently shifted every fixed index in the original script.
+    raw_lines <- read.csv(file.path(in_path, l), header = FALSE,
+                          colClasses = "character", check.names = FALSE)
+    labels <- trimws(raw_lines[[1]])
 
-    # Rows 1-14 of the data frame are cartridge metadata (File Name, Sample ID,
-    # Lane ID, Binding Density, ...). Probe rows begin at row 15.
-    df <- df_in[15:dim(df_in)[1], ]
+    # First probe row = first row whose column 1 is a probe class.
+    first_probe <- which(labels %in% c("Positive", "Negative",
+                                       "Endogenous", "Housekeeping"))[1]
+    if (is.na(first_probe)) {
+      stop("No probe rows found in ", l,
+           " - column 1 should read Positive / Negative / Endogenous.")
+    }
 
     # Column 2 holds the probe name; that becomes the row identifier and is
     # what every downstream grepl() on "_C_", "_R_", "NEG_", "POS_" relies on.
-    row.names(df) <- df[2] %>% unlist()
+    probe_names <- trimws(raw_lines[[2]][first_probe:nrow(raw_lines)])
 
     # Columns 1-3 are Class / Name / Accession. Counts start at column 4.
-    df <- df[, 4:dim(df)[2]] %>% mutate_all(as.numeric)
+    df <- raw_lines[first_probe:nrow(raw_lines), 4:ncol(raw_lines), drop = FALSE]
+    df[] <- lapply(df, function(x) suppressWarnings(as.numeric(x)))
 
     # Drop trailing all-NA columns produced by ragged CSV export.
-    df <- df[, colSums(is.na(df)) < nrow(df)]
+    keep <- colSums(is.na(df)) < nrow(df)
+    df   <- df[, keep, drop = FALSE]
+    rownames(df) <- probe_names
 
-    # Rename columns to the Sample IDs from metadata row 2, but only if those
-    # IDs are unique. If nSolver exported duplicate sample names, keep the
-    # original column headers so nothing is silently merged later.
-    if (n_distinct(c(df_in[2, 4:(3 + dim(df)[2])])) == dim(df)[2]) {
-      colnames(df) <- c(df_in[2, 4:(3 + dim(df)[2])])
+    # ---- Lane names ------------------------------------------------------
+    # Normally the "Sample ID" row. Some older exports put bare lane numbers
+    # (1, 2, 3, ...) there and the real condition labels in "Description".
+    id_row   <- which(labels == "Sample ID")[1]
+    desc_row <- which(labels == "Description")[1]
+    if (is.na(id_row)) stop("No 'Sample ID' row found in ", l)
+
+    lane_row_values <- function(i) {
+      trimws(as.character(raw_lines[i, 4:ncol(raw_lines)]))[keep]
+    }
+
+    lane_names <- lane_row_values(id_row)
+
+    if (all(grepl("^[0-9]+$", lane_names[nzchar(lane_names)])) &&
+        !is.na(desc_row)) {
+      alt <- lane_row_values(desc_row)
+      if (any(nzchar(alt))) {
+        warning(l, ": the Sample ID row holds bare lane numbers; ",
+                "using the Description row for lane names instead.")
+        lane_names <- alt
+      }
+    }
+
+    # Only rename if the labels are unique. If the export carried duplicate
+    # sample names, keep the original headers so nothing is silently merged.
+    if (anyDuplicated(lane_names) == 0 && all(nzchar(lane_names))) {
+      colnames(df) <- lane_names
     } else {
-      warning("Duplicate Sample IDs in ", l,
+      warning("Duplicate or blank lane labels in ", l,
               " - keeping original column headers.")
     }
 
@@ -171,6 +226,37 @@ for (l in dfnames) {
 
   } else {
     stop('INPUT_FORMAT must be "nsolver" or "matrix", got: ', INPUT_FORMAT)
+  }
+
+  # ---- Drop lanes listed in the config -----------------------------------
+  if (length(cfg$exclude_lanes) > 0) {
+    hit <- colnames(df) %in% cfg$exclude_lanes
+    if (any(hit)) {
+      cat("  ", l, ": excluding lane(s) ",
+          paste(colnames(df)[hit], collapse = ", "),
+          " (cfg$exclude_lanes)\n", sep = "")
+      df <- df[, !hit, drop = FALSE]
+    }
+  }
+
+  # ---- Dead lane check ----------------------------------------------------
+  # A lane whose endogenous probes all sit at background is a failed
+  # hybridization. It is worth catching here because such a lane will fail
+  # every housekeeping probe, and a housekeeping probe that fails in ONE lane
+  # is dropped from ALL of them - so one dead lane can wipe out a whole run's
+  # normalizers and stop the script further down with a much less obvious
+  # error. Add the lane to cfg$exclude_lanes to drop it.
+  endo_rows <- !grepl("NEG_|POS_", rownames(df))
+  if (any(endo_rows)) {
+    lane_max <- suppressWarnings(apply(df[endo_rows, , drop = FALSE], 2,
+                                       max, na.rm = TRUE))
+    dead <- colnames(df)[is.finite(lane_max) & lane_max <= 10]
+    if (length(dead) > 0) {
+      warning(l, ": lane(s) ", paste(dead, collapse = ", "),
+              " look dead - every endogenous probe is at background ",
+              "(max count <= 10). They will fail the housekeeping probes for ",
+              "this entire run. Add them to cfg$exclude_lanes if so.")
+    }
   }
 
   rawdata_list[[run_label(l)]] <- df
@@ -261,6 +347,26 @@ for (i in dfnames) {
   # has a coefficient of variation within limitCoV. The final pass removes
   # nothing and simply exits the loop.
   ctrlProbes_toIter <- allCtrlTrim
+
+  # A run with no surviving normalizers cannot be normalized at all. Say so
+  # here, naming the likely cause, rather than failing inside the CoV loop
+  # with an error that points nowhere near the real problem.
+  if (nrow(allCtrlTrim) == 0) {
+    worst <- names(which.min(apply(allCtrlCorr, 2, min, na.rm = TRUE)))
+    stop("No housekeeping probes survived the minCtrl = ", minCtrl,
+         " threshold in ", i, ".\n",
+         "  Every one of the ", nrow(allCtrlCorr), " control probes reads ",
+         "below it in at least one lane.\n",
+         "  Lowest-reading lane: ", worst, " - if that lane is dead, add it ",
+         "to cfg$exclude_lanes.\n",
+         "  Otherwise lower cfg$min_ctrl for this pair in ",
+         "R/00_species_config.R.")
+  }
+  if (nrow(allCtrlTrim) < 3) {
+    warning(i, ": only ", nrow(allCtrlTrim), " housekeeping probe(s) passed ",
+            "minCtrl = ", minCtrl, ". Fold changes from this run rest on a ",
+            "thin normalization base - check data/control_probe_QC_*.csv.")
+  }
 
   while (max_cov > limitCoV) {
     ctrlProbeCoV_list <- removeCtrlMaxCoV(ctrlProbes_toIter, limitCoV = limitCoV)
@@ -359,25 +465,63 @@ for (i in dfnames) {
 
 # Clearing the list names stops cbind() from prefixing columns with the run
 # label, so a column stays "Fx041X4" rather than "CalbFluc001.Fx041X4".
+#
+# Outputs are named per species/drug pair (cfg$compiled_*_file) rather than
+# the flat "data/compiled_normdata.csv" of the single-species original, so
+# running this script for one pair never clobbers another pair's compiled
+# tables.
+# ---- Duplicate lane check ---------------------------------------------------
+# The same strain is sometimes re-run on a later cartridge. cbind() will
+# happily produce two columns with the same name, and everything downstream
+# then silently uses whichever comes first. Report every repeat, keep the
+# first occurrence (that is, the earliest run), and drop the rest.
+lane_files <- unlist(lapply(names(normdata_list), function(run) {
+  setNames(rep(run, ncol(normdata_list[[run]])), colnames(normdata_list[[run]]))
+}))
+
+dup_lanes <- unique(names(lane_files)[duplicated(names(lane_files))])
+
+if (length(dup_lanes) > 0) {
+  dup_report <- do.call(rbind, lapply(dup_lanes, function(lane) {
+    runs <- unname(lane_files[names(lane_files) == lane])
+    data.frame(lane = lane, runs = paste(runs, collapse = "; "),
+               kept = runs[1], dropped = paste(runs[-1], collapse = "; "),
+               stringsAsFactors = FALSE)
+  }))
+  write.csv(dup_report, cfg$duplicate_lanes_file, row.names = FALSE)
+
+  warning(length(dup_lanes), " lane(s) appear in more than one run: ",
+          paste(dup_lanes, collapse = ", "),
+          ". Keeping the first (earliest) run of each; see ",
+          cfg$duplicate_lanes_file,
+          ". To use a different run, exclude the other file via ",
+          "cfg$exclude_files in R/00_species_config.R.")
+
+  cat("\n!! duplicate lanes across runs (kept the earliest):\n")
+  print(dup_report, row.names = FALSE)
+  cat("\n")
+}
+
 names(rawdata_list) <- NULL
 raw_data <- do.call(cbind, rawdata_list)
-write.csv(x = raw_data, file = file.path(DIR, "compiled_rawdata.csv"))
+raw_data <- raw_data[, !duplicated(colnames(raw_data)), drop = FALSE]
+write.csv(x = raw_data, file = cfg$compiled_rawdata_file)
 
 names(normdata_list) <- NULL
 norm_data <- do.call(cbind, normdata_list)
-write.csv(x = norm_data, file = file.path(DIR, "compiled_normdata.csv"))
+norm_data <- norm_data[, !duplicated(colnames(norm_data)), drop = FALSE]
+write.csv(x = norm_data, file = cfg$compiled_normdata_file)
 
 # Control probe QC across all runs
-write.csv(x = controls, file = file.path(DIR, "control_probe_QC.csv"),
-          row.names = FALSE)
+write.csv(x = controls, file = cfg$control_qc_file, row.names = FALSE)
 
 cat("\n=============================================================\n")
-cat("Normalization complete.\n")
+cat("Normalization complete. (", cfg$label, ")\n", sep = "")
 cat("  per-run normalized CSVs : ", out_path, "\n", sep = "")
-cat("  compiled raw counts     : ", file.path(DIR, "compiled_rawdata.csv"), "\n", sep = "")
-cat("  compiled normalized     : ", file.path(DIR, "compiled_normdata.csv"), "\n", sep = "")
-cat("  control probe QC        : ", file.path(DIR, "control_probe_QC.csv"), "\n", sep = "")
-cat("Next step: R/02_compute_logfc.R\n")
+cat("  compiled raw counts     : ", cfg$compiled_rawdata_file, "\n", sep = "")
+cat("  compiled normalized     : ", cfg$compiled_normdata_file, "\n", sep = "")
+cat("  control probe QC        : ", cfg$control_qc_file, "\n", sep = "")
+cat("Next step: R/02_compute_logfc.R (with the same SPECIES_DRUG)\n")
 cat("=============================================================\n")
 
 
